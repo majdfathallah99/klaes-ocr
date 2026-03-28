@@ -43,32 +43,21 @@ def read_text(image, rotate=False):
 
 
 def extract_number(text):
-    nums = re.findall(r"\d{3,5}", text or "")
-    valid = []
+     nums = re.findall(r"\d{3,5}", text)
 
-    for raw in nums:
-        txt = raw.strip()
+       candidates = []
+       for n in nums:
+          val = int(n)
 
-        if len(txt) == 5 and txt.endswith("0"):
-            txt = txt[:-1]
+          # فلترة ذكية
+             if 400 <= val <= 3000:   # نطاق منطقي للأبواب والنوافذ
+              candidates.append(val)
 
-        if len(txt) == 4 and txt.startswith("0"):
-            txt = txt[1:]
+         if not candidates:
+              return 0.0
 
-        if txt.isdigit():
-            value = int(txt)
-            if 300 <= value <= 5000:
-                valid.append(value)
-
-    if not valid:
-        return 0.0
-
-    counts = {}
-    for value in valid:
-        counts[value] = counts.get(value, 0) + 1
-
-    best = sorted(counts.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
-    return float(best)
+      # خذ أكبر رقم (غالبًا هو البعد)
+       return float(max(candidates))
 
 
 @app.get("/health")
