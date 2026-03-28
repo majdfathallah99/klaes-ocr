@@ -11,7 +11,10 @@ def crop_image(img_bytes):
     img = Image.open(io.BytesIO(img_bytes))
     w, h = img.size
 
+    # قص الجزء السفلي (عرض)
     width_crop = img.crop((0, int(h * 0.7), int(w * 0.8), h))
+
+    # قص الجزء الأيمن (ارتفاع)
     height_crop = img.crop((int(w * 0.7), 0, w, int(h * 0.8)))
 
     buf1 = io.BytesIO()
@@ -23,13 +26,21 @@ def crop_image(img_bytes):
     return buf1.getvalue(), buf2.getvalue()
 
 
-def read_text(image_bytes):
+def read_text(image_bytes, rotate=False):
     img = Image.open(io.BytesIO(image_bytes))
-    return pytesseract.image_to_string(img)
+
+    # 🔥 حل مشكلة النص العمودي (height)
+    if rotate:
+        img = img.rotate(90, expand=True)
+
+    return pytesseract.image_to_string(
+        img,
+        config="--psm 6 -c tessedit_char_whitelist=0123456789"
+    )
 
 
 def extract_number(text):
-    nums = re.findall(r"\d{3,5}", text)
+    nums = re.findall(r"\d+", text)
 
     candidates = []
     for n in nums:
@@ -48,14 +59,22 @@ def root():
     return {"status": "running"}
 
 
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
 @app.post("/ocr")
 async def ocr(file: UploadFile = File(...)):
     content = await file.read()
 
     w_img, h_img = crop_image(content)
 
+    # width عادي
     w_text = read_text(w_img)
-    h_text = read_text(h_img)
+
+    # height مع تدوير 🔥
+    h_text = read_text(h_img, rotate=True)
 
     return {
         "width": extract_number(w_text),
