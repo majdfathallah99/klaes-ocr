@@ -1,7 +1,7 @@
 import io
 import re
 from fastapi import FastAPI, File, UploadFile
-from PIL import Image, ImageOps, ImageFilter
+from PIL import Image, ImageOps
 import pytesseract
 
 app = FastAPI()
@@ -10,8 +10,7 @@ app = FastAPI()
 def preprocess(img: Image.Image) -> Image.Image:
     img = img.convert("L")
     img = ImageOps.autocontrast(img)
-    img = img.resize((img.width * 4, img.height * 4))
-    img = img.filter(ImageFilter.SHARPEN)
+    img = img.resize((img.width * 2, img.height * 2))
     return img
 
 
@@ -19,7 +18,6 @@ def crop_image(img_bytes):
     img = Image.open(io.BytesIO(img_bytes)).convert("L")
     w, h = img.size
 
-    # العرض: شريط سفلي فقط
     width_crop = img.crop((
         int(w * 0.10),
         int(h * 0.82),
@@ -27,10 +25,9 @@ def crop_image(img_bytes):
         int(h * 0.99),
     ))
 
-    # الارتفاع: شريط أيمن أنحف وأكثر دقة
     height_crop = img.crop((
-        int(w * 0.83),
-        int(h * 0.05),
+        int(w * 0.84),
+        int(h * 0.08),
         int(w * 0.99),
         int(h * 0.82),
     ))
@@ -44,77 +41,45 @@ def crop_image(img_bytes):
     return buf1.getvalue(), buf2.getvalue()
 
 
-def ocr_variants(image: Image.Image):
-    variants = [
-        image,
-        image.rotate(90, expand=True),
-        image.rotate(270, expand=True),
-        ImageOps.invert(image),
-        ImageOps.invert(image.rotate(90, expand=True)),
-        ImageOps.invert(image.rotate(270, expand=True)),
-    ]
-
-    texts = []
-    for variant in variants:
-        for psm in (6, 7, 11, 13):
-            try:
-                txt = pytesseract.image_to_string(
-                    variant,
-                    config=f"--psm {psm} -c tessedit_char_whitelist=0123456789"
-                )
-                if txt:
-                    texts.append(txt)
-            except Exception:
-                pass
-    return texts
+def read_width_text(image_bytes):
+    img = Image.open(io.BytesIO(image_bytes))
+    return pytesseract.image_to_string(
+        img,
+        config="--psm 7 -c tessedit_char_whitelist=0123456789"
+    )
 
 
-def extract_all_numbers(texts):
-    nums = []
-    for text in texts:
-        found = re.findall(r"\d{3,5}", text or "")
-        for raw in found:
-            txt = raw.strip()
-
-            if len(txt) == 5 and txt.endswith("0"):
-                txt = txt[:-1]
-
-            if len(txt) == 4 and txt.startswith("0"):
-                txt = txt[1:]
-
-            if txt.isdigit():
-                val = int(txt)
-                if 300 <= val <= 5000:
-                    nums.append(val)
-    return nums
+def read_height_text(image_bytes):
+    img = Image.open(io.BytesIO(image_bytes)).rotate(270, expand=True)
+    return pytesseract.image_to_string(
+        img,
+        config="--psm 7 -c tessedit_char_whitelist=0123456789"
+    )
 
 
-def pick_width(texts):
-    nums = extract_all_numbers(texts)
-    if not nums:
+def extract_number(text, prefer_larger=False):
+    nums = re.findall(r"\d{3,5}", text or "")
+    vals = []
+
+    for raw in nums:
+        txt = raw.strip()
+
+        if len(txt) == 5 and txt.endswith("0"):
+            txt = txt[:-1]
+
+        if len(txt) == 4 and txt.startswith("0"):
+            txt = txt[1:]
+
+        if txt.isdigit():
+            val = int(txt)
+            if 300 <= val <= 3000:
+                vals.append(val)
+
+    if not vals:
         return 0.0
 
-    counts = {}
-    for n in nums:
-        counts[n] = counts.get(n, 0) + 1
-
-    # العرض عادة أصغر من الارتفاع
-    best = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))[0][0]
-    return float(best)
-
-
-def pick_height(texts):
-    nums = extract_all_numbers(texts)
-    if not nums:
-        return 0.0
-
-    counts = {}
-    for n in nums:
-        counts[n] = counts.get(n, 0) + 1
-
-    # الارتفاع عادة أكبر أو أوضح، نأخذ الأكثر تكرارًا ثم الأكبر
-    best = sorted(counts.items(), key=lambda kv: (-kv[1], -kv[0]))[0][0]
-    return float(best)
+    vals = sorted(set(vals))
+    return float(max(vals) if prefer_larger else min(vals))
 
 
 @app.get("/")
@@ -131,17 +96,14 @@ def health():
 async def ocr(file: UploadFile = File(...)):
     content = await file.read()
 
-    w_img_bytes, h_img_bytes = crop_image(content)
+    w_img, h_img = crop_image(content)
 
-    w_img = Image.open(io.BytesIO(w_img_bytes))
-    h_img = Image.open(io.BytesIO(h_img_bytes))
-
-    width_texts = ocr_variants(w_img)
-    height_texts = ocr_variants(h_img)
+    w_text = read_width_text(w_img)
+    h_text = read_height_text(h_img)
 
     return {
-        "width": pick_width(width_texts),
-        "height": pick_height(height_texts),
-        "width_raw": width_texts,
-        "height_raw": height_texts,
+        "width": extract_number(w_text, prefer_larger=False),
+        "height": extract_number(h_text, prefer_larger=True),
+        "width_raw": w_text,
+        "height_raw": h_text,
     }
