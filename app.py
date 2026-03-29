@@ -7,79 +7,83 @@ import pytesseract
 app = FastAPI()
 
 
-def preprocess(img: Image.Image) -> Image.Image:
+# -------------------------
+# preprocessing
+# -------------------------
+def preprocess(img):
     img = img.convert("L")
     img = ImageOps.autocontrast(img)
-    img = img.resize((img.width * 2, img.height * 2))
+    img = img.point(lambda x: 0 if x < 150 else 255, '1')
     return img
 
 
-def crop_width_region(img_bytes: bytes) -> bytes:
-    img = Image.open(io.BytesIO(img_bytes)).convert("L")
+# -------------------------
+# extract numbers
+# -------------------------
+def extract_numbers(text):
+    nums = re.findall(r"\d{3,5}", text)
+    return [int(n) for n in nums]
+
+
+# -------------------------
+# choose width smartly
+# -------------------------
+def pick_width(nums):
+    if not nums:
+        return 0
+    # غالبًا width بين 800 و 3000
+    candidates = [n for n in nums if 500 < n < 4000]
+    return max(candidates) if candidates else max(nums)
+
+
+# -------------------------
+# OCR logic
+# -------------------------
+def read_width(content):
+    img = Image.open(io.BytesIO(content))
+
+    # محاولة 1: crop الجزء السفلي
     w, h = img.size
+    crop = img.crop((0, int(h * 0.7), w, h))
 
-    width_crop = img.crop((
-        int(w * 0.10),
-        int(h * 0.82),
-        int(w * 0.78),
-        int(h * 0.99),
-    ))
+    crop = preprocess(crop)
 
-    out = io.BytesIO()
-    preprocess(width_crop).save(out, format="PNG")
-    return out.getvalue()
-
-
-def read_width_text(image_bytes: bytes) -> str:
-    img = Image.open(io.BytesIO(image_bytes))
-    return pytesseract.image_to_string(
-        img,
-        config="--psm 7 -c tessedit_char_whitelist=0123456789"
+    text1 = pytesseract.image_to_string(
+        crop,
+        config="--psm 6 -c tessedit_char_whitelist=0123456789"
     )
 
+    nums1 = extract_numbers(text1)
+    width1 = pick_width(nums1)
 
-def extract_width(text: str) -> float:
-    nums = re.findall(r"\d{3,5}", text or "")
-    vals = []
+    # إذا نجح نرجعه
+    if width1:
+        return width1, text1
 
-    for raw in nums:
-        txt = raw.strip()
+    # محاولة 2: الصورة كاملة
+    full = preprocess(img)
 
-        if len(txt) == 5 and txt.endswith("0"):
-            txt = txt[:-1]
+    text2 = pytesseract.image_to_string(
+        full,
+        config="--psm 6 -c tessedit_char_whitelist=0123456789"
+    )
 
-        if len(txt) == 4 and txt.startswith("0"):
-            txt = txt[1:]
+    nums2 = extract_numbers(text2)
+    width2 = pick_width(nums2)
 
-        if txt.isdigit():
-            val = int(txt)
-            if 300 <= val <= 3000:
-                vals.append(val)
-
-    if not vals:
-        return 0.0
-
-    vals = sorted(set(vals))
-    return float(min(vals))
+    return width2, text2
 
 
-@app.get("/")
-def root():
-    return {"status": "running"}
-
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
-
-
+# -------------------------
+# API
+# -------------------------
 @app.post("/ocr")
 async def ocr(file: UploadFile = File(...)):
     content = await file.read()
-    width_img = crop_width_region(content)
-    width_text = read_width_text(width_img)
+
+    width, raw = read_width(content)
 
     return {
-        "width": extract_width(width_text),
-        "width_raw": width_text,
+        "width": width,
+        "raw": raw,
     }
